@@ -14,6 +14,9 @@ ReadyCheckTalents.toc
 # VS Code workspace settings
 .vscode/
 
+# Claude Code's settings directory
+.claude/
+
 # Windows
 Thumbs.db
 Desktop.ini

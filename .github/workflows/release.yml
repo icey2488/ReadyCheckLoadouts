@@ -5,6 +5,10 @@ on:
     tags:
       - '**'
 
+permissions:
+  contents: write
+
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -16,3 +20,4 @@ jobs:
         env:
           CF_API_KEY: ${{ secrets.CF_API_KEY }}
           GITHUB_OAUTH: ${{ secrets.GITHUB_TOKEN }}
+
