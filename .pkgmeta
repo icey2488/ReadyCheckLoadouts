@@ -1,0 +1,10 @@
+package-as: ReadyCheckLoadouts
+
+ignore:
+  - .github
+  - .gitignore
+  - .pkgmeta
+
+manual-changelog:
+  filename: CHANGELOG.md
+  markdown-to-bbcode: yes

@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\Raide\\\\OneDrive\\\\Desktop\\\\ReadyCheckLoadouts\" -Recurse -File)"
+    ]
+  }
+}
