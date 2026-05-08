@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.0.1
+## 1.3
 
 ### Added
 
@@ -9,8 +9,6 @@
   to follow the active spec), it displays `"Active Spec"`; otherwise it resolves the spec name
   via `GetSpecializationInfoByID()`. Enabled by default; can be toggled via `/rcl` →
   "Show Loot Specialization".
-
-## Unreleased
 
 ### Fixed
 
