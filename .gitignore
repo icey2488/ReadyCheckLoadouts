@@ -1,0 +1,22 @@
+# WoW backup files
+*.bak
+
+# Old/renamed addon files left over from refactors
+ReadyCheckTalents.lua
+ReadyCheckTalents.toc
+
+# BigWigsMods packager working directory
+.release/
+
+# Release zips
+*.zip
+
+# VS Code workspace settings
+.vscode/
+
+# Windows
+Thumbs.db
+Desktop.ini
+
+# macOS (if you ever work from one)
+.DS_Store
