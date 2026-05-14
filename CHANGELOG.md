@@ -1,5 +1,50 @@
 # Changelog
 
+## 1.4
+
+### Added
+
+- **Gear durability display** — The ready check window now shows average gear durability
+  with the single lowest-durability item called out alongside, color-coded green (>75%),
+  yellow (>25%), or red (≤25%). Iterates the eleven durability-bearing equipment slots
+  (head, shoulder, chest, waist, legs, feet, wrist, hands, back, main hand, off hand) via
+  `GetInventoryItemDurability` and computes both the weighted average and the per-item minimum.
+  Enabled by default; toggleable via `/rcl` → "Show Gear Durability". Optional chat
+  announcement available via "Output Gear Durability in chat" (off by default).
+
+- **Live durability refresh** — The durability label updates while the ready check window
+  is open. `UPDATE_INVENTORY_DURABILITY` catches damage and repairs;
+  `PLAYER_EQUIPMENT_CHANGED` catches mid-ready-check gear swaps. The latter is filtered
+  against the durability-bearing slot set, so trinket/ring/neck/shirt/tabard changes don't
+  trigger redundant rebuilds. The handler is gated on `frame:IsShown()` and
+  `settings.showDurability` so it does no work when irrelevant.
+
+- **Output channel selector** — All chat announcements (talents, runes, durability) now route
+  through a single configurable channel via a dropdown in options. Options are `/say`, `/yell`,
+  `/party`, `/raid`, `/instance`, `/emote`, and "Smart (auto)" — the smart mode picks the most
+  appropriate group channel based on context (`INSTANCE_CHAT` → `RAID` → `PARTY` → `SAY` fallback).
+  Default is `/say`, preserving prior behavior for existing users. All output flows through a
+  single `Announce()` helper that strips color codes and resolves the active channel at send time.
+
+- **Frame appearance controls** — Scale slider (0.5×–2.0×), opacity slider (10–100%), and a
+  lock-frame toggle to prevent accidental drags. Window position is now persisted across sessions
+  via a new `framePoint` saved variable, applied at `ADDON_LOADED`. A "Reset Position" button
+  recenters the window if it ends up off-screen. Both the main window and options panel use
+  `SetClampedToScreen` so scaling can't push them out of view.
+
+- **Options panel reorganization** — Reworked into a two-column 580×480 layout with four
+  section headers: Display and Announcements in the left column, Auto-Switch and Frame
+  Appearance in the right. The previous single-column layout was too tall to fit comfortably
+  on smaller resolutions once the new controls were added.
+
+### Changed
+
+- **DK rune chat output** now routes through the configurable output channel (previously
+  hardcoded to `/say`). Behavior is preserved for users who keep the channel at its default.
+
+- **`/rcldebug`** now also prints the resolved output channel, current frame scale, opacity,
+  and lock state alongside the existing talent/preset state.
+
 ## 1.3
 
 ### Added
