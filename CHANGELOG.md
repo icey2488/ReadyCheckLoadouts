@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.5
+
+### Added
+
+- **Consumable tracking** — Track flasks, potions, food, runes, oils, drums, and more. Counts are quality-tier-aware, summing both crafted quality tiers into a single total.
+- **Consumables manager window** — Open it via `/rcl` or the options panel to add, remove, and set a per-item low-supply threshold.
+- **Consumables on the ready-check window** — Tracked consumables now appear when a ready check fires, with low/missing highlighting.
+- **Quick-add search bar** — Find items from your bags or the catalog from a single search box, without scrolling the Add dropdowns.
+- **Account-wide consumable profiles** — Set your list up on one character and bring it to another with "Copy from", then adjust it per character.
+
+### Changed
+
+- Updated for patch 12.0.7.
+
 ## 1.4
 
 ### Added

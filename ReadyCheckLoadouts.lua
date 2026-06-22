@@ -13,8 +13,11 @@ local DEFAULT_SETTINGS = {
     showDurability   = true,     -- NEW: show gear durability on the frame
     sayDurability    = false,    -- NEW: announce durability in chat
     outputChannel    = "SAY",    -- NEW: chat channel for announcements
+    showConsumables    = true,    -- show tracked consumables on the ready-check frame
+    consumablesLowOnly = false,   -- only list consumables that are low or missing
     autoSwitch       = false,
     dungeonPresets   = {},       -- [DungeonID] = ConfigID
+    trackedConsumables = {},     -- list of { id = <number>, threshold = <number> }
     frameScale       = 1.0,      -- NEW
     frameOpacity     = 1.0,      -- NEW
     lockFrame        = false,    -- NEW
@@ -22,6 +25,10 @@ local DEFAULT_SETTINGS = {
 }
 
 local settings = CopyTable(DEFAULT_SETTINGS)
+local myCharKey  -- "Name - Realm"; set at PLAYER_LOGIN by InitConsumableStore
+
+-- Default low-supply warning threshold applied to a newly tracked consumable.
+local DEFAULT_CONSUMABLE_THRESHOLD = 10
 
 local function LoadSettings()
     ReadyCheckLoadoutsDB = ReadyCheckLoadoutsDB or {}
@@ -37,6 +44,23 @@ local function LoadSettings()
     end
     -- One live reference; SavedVariables serializes this at logout.
     ReadyCheckLoadoutsDB = settings
+end
+
+-- Account-wide consumable store, keyed by character ("Name - Realm").
+-- Each character's tracked list is its profile; this is what enables
+-- "Copy from <character>" across the account.
+local function InitConsumableStore()
+    ReadyCheckLoadoutsAccountDB = ReadyCheckLoadoutsAccountDB or {}
+    ReadyCheckLoadoutsAccountDB.consumablesByCharacter = ReadyCheckLoadoutsAccountDB.consumablesByCharacter or {}
+    local store = ReadyCheckLoadoutsAccountDB.consumablesByCharacter
+    myCharKey = (UnitName("player") or "Unknown") .. " - " .. (GetRealmName() or "Unknown")
+    if store[myCharKey] == nil then
+        -- Migrate this character's existing per-character list (or start empty).
+        store[myCharKey] = settings.trackedConsumables or {}
+    end
+    -- Point the live working list at the account-backed entry, so all
+    -- existing code (manager, bag scan, ready-check block) stays unchanged.
+    settings.trackedConsumables = store[myCharKey]
 end
 
 -- ============================================================
@@ -157,6 +181,12 @@ local runeLoadoutLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlig
 runeLoadoutLabel:SetTextColor(0.8, 0.8, 0.8)
 runeLoadoutLabel:SetPoint("TOPLEFT", durabilityLabel, "BOTTOMLEFT", 0, -15)
 runeLoadoutLabel:Hide()
+
+local consumablesLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+consumablesLabel:SetTextColor(0.8, 0.8, 0.8)
+consumablesLabel:SetPoint("TOPLEFT", runeLoadoutLabel, "BOTTOMLEFT", 0, -15)
+consumablesLabel:SetJustifyH("LEFT")
+consumablesLabel:Hide()
 
 local closeBtn = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
 closeBtn:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -4, -4)
@@ -311,6 +341,7 @@ local function GetLoadoutInfo()
     return specName, specIconID, gearName, talentName, specID
 end
 
+local BuildConsumablesText
 local function ShowLoadoutWindow(overrideWarningText, cachedDiffID, cachedInstID)
     local specName, specIconID, gearName, talentName, specID = GetLoadoutInfo()
 
@@ -390,6 +421,19 @@ local function ShowLoadoutWindow(overrideWarningText, cachedDiffID, cachedInstID
         runeLoadoutLabel:Hide()
     end
 
+    if settings.showConsumables then
+        local consumablesText = BuildConsumablesText()
+        if consumablesText then
+            consumablesLabel:SetText(consumablesText)
+            consumablesLabel:Show()
+            frameHeight = frameHeight + consumablesLabel:GetStringHeight() + 27
+        else
+            consumablesLabel:Hide()
+        end
+    else
+        consumablesLabel:Hide()
+    end
+
     frame:SetHeight(frameHeight)
 
     if settings.sayLoadout then
@@ -404,6 +448,8 @@ local function ShowLoadoutWindow(overrideWarningText, cachedDiffID, cachedInstID
         Announce(runeTextOutput)
     end
 
+    -- (Phase 4: announce low consumables here, gated on settings.sayConsumables)
+
     frame:Show()
 end
 
@@ -412,7 +458,7 @@ end
 -- ============================================================
 local optionsFrame
 local raidCheckbox, dungeonCheckbox, sayCheckbox, sayRunesCheckbox, lootSpecCheckbox, autoCheckbox
-local durabilityCheckbox, sayDurabilityCheckbox, lockFrameCheckbox
+local durabilityCheckbox, sayDurabilityCheckbox, lockFrameCheckbox, consumablesCheckbox, consumablesLowCheckbox
 local scaleSlider, opacitySlider, channelDropdown
 
 local function UpdateChannelDropdownText()
@@ -421,10 +467,16 @@ local function UpdateChannelDropdownText()
     end
 end
 
+-- Forward declarations for the Tracked Consumables manager (Phase 2 UI). The button created in
+-- EnsureOptionsFrame below and the /rcl handler need these names in scope, but the actual bodies
+-- live AFTER the consumable engine (they call ConsumableName/ConsumableCount/ConsumableColor/
+-- UntrackConsumable, which aren't lexically visible until then). Declared here, assigned later.
+local EnsureConsumablesFrame, UpdateConsumablesDisplay
+
 local function EnsureOptionsFrame()
     if optionsFrame then return end
     optionsFrame = CreateFrame("Frame", "RCLOptionsFrame", UIParent, "BackdropTemplate")
-    optionsFrame:SetSize(580, 480)
+    optionsFrame:SetSize(580, 552)
     optionsFrame:SetPoint("CENTER")
     optionsFrame:SetMovable(true)
     optionsFrame:EnableMouse(true)
@@ -438,6 +490,11 @@ local function EnsureOptionsFrame()
         tile     = true, tileSize = 32, edgeSize = 32,
         insets   = { left = 11, right = 12, top = 12, bottom = 11 },
     })
+
+    local optBG = optionsFrame:CreateTexture(nil, "BORDER")
+    optBG:SetPoint("TOPLEFT", optionsFrame, "TOPLEFT", 12, -12)
+    optBG:SetPoint("BOTTOMRIGHT", optionsFrame, "BOTTOMRIGHT", -12, 12)
+    optBG:SetColorTexture(0.05, 0.05, 0.06, 0.95)
 
     local optionsCloseBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelCloseButton")
     optionsCloseBtn:SetPoint("TOPRIGHT", optionsFrame, "TOPRIGHT", -4, -4)
@@ -646,6 +703,17 @@ local function EnsureOptionsFrame()
     lockFrameCheckbox:SetScript("OnClick", function(self) settings.lockFrame = self:GetChecked() end)
     AddSimpleTooltip(lockFrameCheckbox, "Lock Frame", "Prevents the ready check window from being dragged.")
 
+    -- === Column 2: Consumables ===
+    local consHeader = CreateSectionHeader("Consumables", lockFrameCheckbox, -16)
+
+    consumablesCheckbox = CreateCheck("Show Tracked Consumables", consHeader, -8)
+    consumablesCheckbox:SetScript("OnClick", function(self) settings.showConsumables = self:GetChecked() end)
+    AddSimpleTooltip(consumablesCheckbox, "Tracked Consumables", "Shows your tracked consumables and their counts on the ready check window, color-coded green/yellow/red.")
+
+    consumablesLowCheckbox = CreateCheck("Only show low/missing", consumablesCheckbox, -10)
+    consumablesLowCheckbox:SetScript("OnClick", function(self) settings.consumablesLowOnly = self:GetChecked() end)
+    AddSimpleTooltip(consumablesLowCheckbox, "Low/Missing Only", "When checked, the ready check window only lists consumables below their threshold, hiding the ones you have enough of.")
+
     -- === Bottom buttons ===
     local testBtn = CreateFrame("Button", nil, optionsFrame, "GameMenuButtonTemplate")
     testBtn:SetSize(115, 24)
@@ -677,6 +745,19 @@ local function EnsureOptionsFrame()
     end)
     AddSimpleTooltip(clearBtn, "Clear All Presets", "Removes all assigned dungeon talent presets from your database.")
 
+    -- Opens the dedicated Tracked Consumables manager. Sits in column 2 directly under the
+    -- Consumables checkboxes, where Frame Appearance leaves empty space below it.
+    local consumablesBtn = CreateFrame("Button", nil, optionsFrame, "UIPanelButtonTemplate")
+    consumablesBtn:SetSize(160, 24)
+    consumablesBtn:SetPoint("TOPLEFT", consumablesLowCheckbox, "BOTTOMLEFT", 0, -12)
+    consumablesBtn:SetText("Manage Consumables...")
+    consumablesBtn:SetScript("OnClick", function()
+        EnsureConsumablesFrame()
+        UpdateConsumablesDisplay()
+        RCLConsumablesFrame:Show()
+    end)
+    AddSimpleTooltip(consumablesBtn, "Manage Consumables", "Opens the tracked-consumables manager, where you can adjust low-supply thresholds and stop tracking items.")
+
     -- Hide it initially so the first /rcl toggle works correctly
     optionsFrame:Hide()
 end
@@ -689,6 +770,8 @@ local function UpdateOptionsDisplay()
     sayRunesCheckbox:SetChecked(settings.sayRunes)
     lootSpecCheckbox:SetChecked(settings.showLootSpec)
     durabilityCheckbox:SetChecked(settings.showDurability)
+    consumablesCheckbox:SetChecked(settings.showConsumables)
+    consumablesLowCheckbox:SetChecked(settings.consumablesLowOnly)
     sayDurabilityCheckbox:SetChecked(settings.sayDurability)
     autoCheckbox:SetChecked(settings.autoSwitch)
     lockFrameCheckbox:SetChecked(settings.lockFrame)
@@ -706,10 +789,14 @@ eFrame:RegisterEvent("READY_CHECK")
 eFrame:RegisterEvent("PLAYER_REGEN_DISABLED")
 eFrame:RegisterEvent("UPDATE_INVENTORY_DURABILITY")
 eFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
+eFrame:RegisterEvent("PLAYER_LOGIN")
 eFrame:SetScript("OnEvent", function(self, event, arg1)
     if event == "ADDON_LOADED" and arg1 == addonName then
         LoadSettings()
         ApplyFrameAppearance()
+
+    elseif event == "PLAYER_LOGIN" then
+        InitConsumableStore()
 
     elseif event == "UPDATE_INVENTORY_DURABILITY" or event == "PLAYER_EQUIPMENT_CHANGED" then
         -- Live-refresh the durability label so it stays accurate if gear takes damage,
@@ -767,16 +854,786 @@ eFrame:SetScript("OnEvent", function(self, event, arg1)
 end)
 
 -- ============================================================
+-- Consumable Tracking (Phase 1: data + counting engine, no UI)
+-- ============================================================
+
+-- Lazy reverse index of itemID -> { label = <category label>, name = <item name>, ids = <set> },
+-- built once from RCL.CONSUMABLE_CATALOG and cached in this upvalue. A catalog item now carries an
+-- `ids` set (two itemIDs for Midnight crafted Silver+Gold tiers, one for non-crafted/legacy items);
+-- EVERY id in that set is mapped to the SAME shared info table, so any tier resolves to the same
+-- label, name, and the complete id set.
+local catalogIndex
+local function GetCatalogInfo(id)
+    if not catalogIndex then
+        catalogIndex = {}
+        for _, category in ipairs(RCL.CONSUMABLE_CATALOG or {}) do
+            for _, item in ipairs(category.items or {}) do
+                local info = { label = category.label, name = item.name, ids = item.ids }
+                for _, tierID in ipairs(item.ids or {}) do
+                    catalogIndex[tierID] = info
+                end
+            end
+        end
+    end
+    local info = catalogIndex[id]
+    if info then
+        return info.label, info.name, info.ids
+    end
+    return nil
+end
+
+-- Collapse an itemID to a stable identity for deduping. A catalogued item maps to its set's first id
+-- (all of its quality tiers share one id set, so every tier collapses to the same key); an
+-- uncatalogued id maps to itself. Used by BOTH the bag scan and the tracker so they group the tiers
+-- of a catalog item identically.
+local function CatalogKey(id)
+    local _, _, ids = GetCatalogInfo(id)
+    return (ids and ids[1]) or id
+end
+
+-- Display name: prefer the curated catalog name, then the live item cache, then a placeholder.
+local function ConsumableName(id)
+    local _, name = GetCatalogInfo(id)
+    if name then return name end
+    C_Item.RequestLoadItemDataByID(id)
+    local itemName = C_Item.GetItemInfo(id)
+    if itemName then return itemName end
+    -- Name still unavailable (item not cached on this character, common right after an import). The
+    -- load requested above will fire GET_ITEM_INFO_RECEIVED and trigger a redraw once the data
+    -- arrives; until then keep showing the "item:id" placeholder.
+    return "item:" .. id
+end
+
+-- Single source of truth for counts: carried bags only (no bank, no charges, no reagent bank).
+-- When the id belongs to a catalog item, sum GetItemCount across EVERY id in its set so a stack
+-- split across the Silver and Gold quality tiers is counted once, in full. Uncatalogued ids fall
+-- back to a single GetItemCount. The bags-only flags (false, false, false) are identical in both
+-- paths.
+local function ConsumableCount(id)
+    local _, _, ids = GetCatalogInfo(id)
+    if ids then
+        local total = 0
+        for _, tierID in ipairs(ids) do
+            total = total + C_Item.GetItemCount(tierID, false, false, false)
+        end
+        return total
+    end
+    return C_Item.GetItemCount(id, false, false, false)
+end
+
+-- Parallels DurabilityColor but keyed on count vs threshold. Returns (colorEscape, statusWord).
+local function ConsumableColor(count, threshold)
+    if count == 0 then
+        return "|cffff0000", "out"
+    elseif count < threshold then
+        return "|cffffff00", "low"
+    else
+        return "|cff00ff00", "ok"
+    end
+end
+
+-- Index in settings.trackedConsumables that represents the same item as `id`, or nil. Matching is
+-- by CatalogKey, so tracking either quality tier of a catalog item resolves to the single existing
+-- entry no matter which tier id it was stored under -- no duplicate per catalog item. Uncatalogued
+-- ids still match only their exact id. (Storage stays id-based; we do not rewrite saved entries.)
+local function FindTrackedIndex(id)
+    local key = CatalogKey(id)
+    for i, entry in ipairs(settings.trackedConsumables) do
+        if CatalogKey(entry.id) == key then return i end
+    end
+    return nil
+end
+
+-- Add or update a tracked consumable, then warm the item cache for its name.
+local function TrackConsumable(id, threshold)
+    local index = FindTrackedIndex(id)
+    if index then
+        settings.trackedConsumables[index].threshold = threshold or settings.trackedConsumables[index].threshold or DEFAULT_CONSUMABLE_THRESHOLD
+    else
+        table.insert(settings.trackedConsumables, {
+            id        = id,
+            threshold = threshold or DEFAULT_CONSUMABLE_THRESHOLD,
+        })
+    end
+    C_Item.RequestLoadItemDataByID(id)
+end
+
+-- Remove a tracked consumable if present. Returns true when something was removed.
+local function UntrackConsumable(id)
+    local index = FindTrackedIndex(id)
+    if index then
+        table.remove(settings.trackedConsumables, index)
+        return true
+    end
+    return false
+end
+
+-- Shared output for /rcl tracklist and /rcldebug so the two can never drift.
+local function PrintTrackedList()
+    if #settings.trackedConsumables == 0 then
+        print("|cff00ccff[RCL]|r No consumables tracked.")
+        return
+    end
+    for _, entry in ipairs(settings.trackedConsumables) do
+        local count = ConsumableCount(entry.id)
+        local color, status = ConsumableColor(count, entry.threshold)
+        print(string.format("|cff00ccff[RCL]|r %s%s|r: %d / %d (%s)",
+            color, ConsumableName(entry.id), count, entry.threshold, status))
+    end
+end
+
+-- Scan carried bags for consumables (and optionally everything else). Returns a sorted list of
+-- { id, count, label }. Discovery only; counts come from ConsumableCount so this and the tracker
+-- always agree. includeOther=true also surfaces non-consumable items (e.g. Auto-Hammer).
+local function ScanBags(includeOther)
+    local seen, found = {}, {}
+    local containers = {}
+    for bag = 0, NUM_BAG_SLOTS do
+        table.insert(containers, bag)
+    end
+    table.insert(containers, Enum.BagIndex.ReagentBag)
+    for _, bag in ipairs(containers) do
+        local slots = C_Container.GetContainerNumSlots(bag) or 0
+        for slot = 1, slots do
+            local id = C_Container.GetContainerItemID(bag, slot)
+            -- Collapse all quality tiers of a catalog item onto ONE row: dedupe by CatalogKey (the
+            -- item's first tier id) rather than the raw id, and report the summed ConsumableCount.
+            -- A flask carried at both Silver and Gold thus appears once with the combined count;
+            -- uncatalogued ids key on themselves and stay individual.
+            local key = id and CatalogKey(id)
+            if id and not seen[key] then
+                local _, _, _, _, _, classID = C_Item.GetItemInfoInstant(id)
+                if includeOther or classID == Enum.ItemClass.Consumable then
+                    seen[key] = true
+                    table.insert(found, {
+                        id    = key,
+                        count = ConsumableCount(key),
+                        label = GetCatalogInfo(key) or "Uncatalogued",
+                    })
+                end
+            end
+        end
+    end
+    table.sort(found, function(a, b)
+        if a.label ~= b.label then return a.label < b.label end
+        return ConsumableName(a.id) < ConsumableName(b.id)
+    end)
+    return found
+end
+
+-- Returns the formatted consumables block for the ready check window, or nil when there is nothing
+-- to show. Mirrors BuildDurabilityText so ShowLoadoutWindow can treat it the same way. Assigned to
+-- the local forward-declared above ShowLoadoutWindow (depends on ConsumableCount/ConsumableColor/
+-- ConsumableName/DEFAULT_CONSUMABLE_THRESHOLD, which aren't in scope until here).
+function BuildConsumablesText()
+    local tracked = settings.trackedConsumables
+    if not tracked or #tracked == 0 then return nil end
+    local lines = {}
+    for _, entry in ipairs(tracked) do
+        local threshold = entry.threshold or DEFAULT_CONSUMABLE_THRESHOLD
+        local count = ConsumableCount(entry.id)
+        local color, status = ConsumableColor(count, threshold)
+        if (not settings.consumablesLowOnly) or status ~= "ok" then
+            lines[#lines + 1] = ConsumableName(entry.id) .. ": " .. color .. count .. "|r"
+        end
+    end
+    if #lines == 0 then return nil end
+    return "Consumables:\n" .. table.concat(lines, "\n")
+end
+
+-- ============================================================
+-- Consumable Tracking (Phase 2: tracked-consumables manager UI)
+-- ============================================================
+-- These assign the locals forward-declared above EnsureOptionsFrame. They sit HERE, after the
+-- consumable engine, because their bodies call ConsumableName/ConsumableCount/ConsumableColor/
+-- UntrackConsumable -- locals not in lexical scope until this point. (Plain `function Name` rather
+-- than `local function Name`, so we populate the existing upvalues instead of shadowing them.)
+
+-- Build the manager frame once; no-op on subsequent calls. Styled to match RCLOptionsFrame.
+function EnsureConsumablesFrame()
+    if RCLConsumablesFrame then return end
+
+    local f = CreateFrame("Frame", "RCLConsumablesFrame", UIParent, "BackdropTemplate")
+    f:SetFrameStrata("DIALOG")
+    f:SetSize(400, 460)
+    f:SetPoint("CENTER")
+    f:SetMovable(true)
+    f:EnableMouse(true)
+    f:RegisterForDrag("LeftButton")
+    f:SetScript("OnDragStart", f.StartMoving)
+    f:SetScript("OnDragStop", f.StopMovingOrSizing)
+    f:SetClampedToScreen(true)
+    f:SetResizable(true)
+    f:SetResizeBounds(400, 200)
+    f:SetBackdrop({
+        bgFile   = "Interface/DialogFrame/UI-DialogBox-Background",
+        edgeFile = "Interface/DialogFrame/UI-DialogBox-Border",
+        tile     = true, tileSize = 32, edgeSize = 32,
+        insets   = { left = 11, right = 12, top = 12, bottom = 11 },
+    })
+
+    local consBG = f:CreateTexture(nil, "BORDER")
+    consBG:SetPoint("TOPLEFT", f, "TOPLEFT", 12, -12)
+    consBG:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -12, 12)
+    consBG:SetColorTexture(0.05, 0.05, 0.06, 0.95)
+
+    -- Resize grip in the bottom-right corner; dragging it resizes the frame and reflows the rows.
+    local resizeGrip = CreateFrame("Button", nil, f)
+    resizeGrip:SetSize(16, 16)
+    resizeGrip:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", -8, 8)
+    resizeGrip:SetNormalTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Up")
+    resizeGrip:SetPushedTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Down")
+    resizeGrip:SetHighlightTexture("Interface/ChatFrame/UI-ChatIM-SizeGrabber-Highlight")
+    resizeGrip:SetScript("OnMouseDown", function() f:StartSizing("BOTTOMRIGHT") end)
+    resizeGrip:SetScript("OnMouseUp", function()
+        f:StopMovingOrSizing()
+        UpdateConsumablesDisplay()
+    end)
+
+    -- Reflow rows live while dragging so the name column keeps filling the new width.
+    f:SetScript("OnSizeChanged", function()
+        if UpdateConsumablesDisplay then UpdateConsumablesDisplay() end
+    end)
+
+    local closeBtn = CreateFrame("Button", nil, f, "UIPanelCloseButton")
+    closeBtn:SetPoint("TOPRIGHT", f, "TOPRIGHT", -4, -4)
+    closeBtn:SetScript("OnClick", function() f:Hide() end)
+
+    local title = f:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
+    title:SetPoint("TOP", f, "TOP", 0, -18)
+    title:SetText("Tracked Consumables")
+
+    -- "Add from Bags" dropdown: lists carried consumables that aren't tracked yet; picking one
+    -- tracks it. Mirrors the options-frame dropdowns (same template + SetupMenu pattern); UpdateText
+    -- is locked so the summary label stays "Add from Bags" like the dungeon-preset dropdown.
+    local addBagsDropdown = CreateFrame("DropdownButton", "RCLAddBagsDropdown", f, "WowStyle1DropdownTemplate")
+    addBagsDropdown:SetPoint("TOPLEFT", f, "TOPLEFT", 20, -44)
+    addBagsDropdown:SetWidth(180)
+    addBagsDropdown:SetText("Add from Bags")
+    addBagsDropdown.UpdateText = function(self) end -- lock text
+    addBagsDropdown:SetupMenu(function(dropdown, rootDescription)
+        local found = ScanBags(false)
+        local addedAny = false
+        for _, entry in ipairs(found) do
+            if FindTrackedIndex(entry.id) == nil then
+                rootDescription:CreateButton(ConsumableName(entry.id) .. "  x" .. entry.count, function()
+                    TrackConsumable(entry.id)
+                    UpdateConsumablesDisplay()
+                end)
+                addedAny = true
+            end
+        end
+        if not addedAny then
+            rootDescription:CreateTitle("Nothing new to add")
+        end
+    end)
+
+    -- "Add from Catalog" dropdown: the curated quick-add source, sitting beside "Add from Bags".
+    -- Each catalog category becomes a submenu, each item a leaf that tracks its canonical id. Same
+    -- template + SetupMenu pattern and the same locked UpdateText so the summary stays "Add from Catalog".
+    local addCatalogDropdown = CreateFrame("DropdownButton", "RCLAddCatalogDropdown", f, "WowStyle1DropdownTemplate")
+    addCatalogDropdown:SetPoint("LEFT", addBagsDropdown, "RIGHT", 8, 0)
+    addCatalogDropdown:SetWidth(180)
+    addCatalogDropdown:SetText("Add from Catalog")
+    addCatalogDropdown.UpdateText = function(self) end -- lock text
+    addCatalogDropdown:SetupMenu(function(dropdown, rootDescription)
+        for _, category in ipairs(RCL.CONSUMABLE_CATALOG or {}) do
+            local submenu = rootDescription:CreateButton(category.label)
+            for _, item in ipairs(category.items) do
+                submenu:CreateButton(item.name, function()
+                    TrackConsumable(item.ids[1])
+                    UpdateConsumablesDisplay()
+                end)
+            end
+        end
+    end)
+
+    -- "Copy from..." dropdown: a new row below the two Add dropdowns. Lists every other character
+    -- with a non-empty saved list; picking one opens a confirm popup that replaces this character's
+    -- tracked list with a copy of theirs. Same template + locked-UpdateText pattern as above.
+    local copyFromDropdown = CreateFrame("DropdownButton", "RCLCopyFromDropdown", f, "WowStyle1DropdownTemplate")
+    copyFromDropdown:SetPoint("TOPLEFT", f, "TOPLEFT", 20, -74)
+    copyFromDropdown:SetWidth(180)
+    copyFromDropdown:SetText("Copy from...")
+    copyFromDropdown.UpdateText = function(self) end -- lock text
+    copyFromDropdown:SetupMenu(function(dropdown, rootDescription)
+        local store = ReadyCheckLoadoutsAccountDB and ReadyCheckLoadoutsAccountDB.consumablesByCharacter
+        local addedAny = false
+        for key, value in pairs(store or {}) do
+            if key ~= myCharKey and type(value) == "table" and #value > 0 then
+                rootDescription:CreateButton(key, function()
+                    StaticPopup_Show("RCL_COPY_CONSUMABLES", key, nil, { sourceKey = key })
+                end)
+                addedAny = true
+            end
+        end
+        if not addedAny then
+            rootDescription:CreateTitle("No other characters with a saved list")
+        end
+    end)
+
+    -- Quick-add search: an as-you-type box that lists untracked matches from BOTH the bags scan and
+    -- the catalog (the exact two sources the Add dropdowns use), so an item can be added without
+    -- opening the long dropdowns. Forward-declared so the result buttons' OnClick closures (built
+    -- below) capture this local as an upvalue rather than a nil global -- same pattern as the file's
+    -- other forward-declared manager functions.
+    local UpdateSearchResults
+
+    -- Search box on the Copy-from row, filling the space to its right. SearchBoxTemplate brings its
+    -- own magnifier and clear button; the clear button empties the text and fires OnTextChanged.
+    local searchBox = CreateFrame("EditBox", "RCLAddSearchBox", f, "SearchBoxTemplate")
+    searchBox:SetHeight(20)
+    searchBox:SetPoint("LEFT", copyFromDropdown, "RIGHT", 10, 0)
+    searchBox:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+    if searchBox.Instructions then
+        searchBox.Instructions:SetText("Search bags & catalog")
+    end
+
+    -- Results overlay. Top corners pinned (TOPLEFT 16,-100; right edge at -16) so it fills the width
+    -- and grows DOWNWARD as its height is set per-update; a literal mid-RIGHT anchor would fight the
+    -- TOPLEFT for vertical position, so the top-right corner is pinned instead. Frame level is raised
+    -- above the tracked rows and an opaque BORDER texture (inset 2px) blocks rows bleeding through.
+    local results = CreateFrame("Frame", "RCLSearchResults", f)
+    results:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -100)
+    results:SetPoint("TOPRIGHT", f, "TOPRIGHT", -16, -100)
+    results:SetFrameLevel(f:GetFrameLevel() + 10)
+    local resultsBG = results:CreateTexture(nil, "BORDER")
+    resultsBG:SetPoint("TOPLEFT", results, "TOPLEFT", 2, -2)
+    resultsBG:SetPoint("BOTTOMRIGHT", results, "BOTTOMRIGHT", -2, 2)
+    resultsBG:SetColorTexture(0.05, 0.05, 0.06, 0.95)
+    results:Hide()
+
+    -- Pool of up to 8 result buttons, stacked from the panel top. Each shows an item icon, a
+    -- left-justified name, and a right-justified quantity (bag count) or blank. OnClick tracks the
+    -- item via the same TrackConsumable + UpdateConsumablesDisplay path the Add dropdowns use, then
+    -- re-runs the search so the just-added item drops out of the list.
+    results.buttons = {}
+    for i = 1, 8 do
+        local btn = CreateFrame("Button", nil, results)
+        btn:SetHeight(22)
+        if i == 1 then
+            btn:SetPoint("TOPLEFT", results, "TOPLEFT", 4, -4)
+            btn:SetPoint("TOPRIGHT", results, "TOPRIGHT", -4, -4)
+        else
+            btn:SetPoint("TOPLEFT", results.buttons[i - 1], "BOTTOMLEFT", 0, 0)
+            btn:SetPoint("TOPRIGHT", results.buttons[i - 1], "BOTTOMRIGHT", 0, 0)
+        end
+
+        local hl = btn:CreateTexture(nil, "HIGHLIGHT")
+        hl:SetAllPoints(btn)
+        hl:SetColorTexture(1, 1, 1, 0.15)
+
+        btn.icon = btn:CreateTexture(nil, "ARTWORK")
+        btn.icon:SetSize(18, 18)
+        btn.icon:SetPoint("LEFT", btn, "LEFT", 2, 0)
+
+        btn.qty = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+        btn.qty:SetJustifyH("RIGHT")
+        btn.qty:SetPoint("RIGHT", btn, "RIGHT", -6, 0)
+
+        btn.name = btn:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+        btn.name:SetJustifyH("LEFT")
+        btn.name:SetWordWrap(false)
+        btn.name:SetPoint("LEFT", btn.icon, "RIGHT", 6, 0)
+        btn.name:SetPoint("RIGHT", btn.qty, "LEFT", -6, 0)
+
+        btn:SetScript("OnClick", function(self)
+            if self.matchId then
+                TrackConsumable(self.matchId)
+                UpdateConsumablesDisplay()
+                UpdateSearchResults()
+            end
+        end)
+
+        btn:Hide()
+        results.buttons[i] = btn
+    end
+
+    -- Rebuild the result list from the current query. Sources and the tracked-skip check mirror the
+    -- two Add dropdowns exactly; de-dupe is by CatalogKey, preferring the bag entry so its count shows.
+    function UpdateSearchResults()
+        local query = strtrim(searchBox:GetText() or ""):lower()
+        if query == "" then
+            results:Hide()
+            return
+        end
+
+        local byKey, candidates = {}, {}
+
+        -- Untracked bag consumables, exactly like "Add from Bags": ScanBags returns entries whose .id
+        -- is already the CatalogKey, with a summed .count we can surface as the quantity.
+        for _, entry in ipairs(ScanBags(false)) do
+            if FindTrackedIndex(entry.id) == nil then
+                local key = CatalogKey(entry.id)
+                if not byKey[key] then
+                    local cand = { id = entry.id, name = ConsumableName(entry.id), count = entry.count }
+                    byKey[key] = cand
+                    candidates[#candidates + 1] = cand
+                end
+            end
+        end
+
+        -- Untracked catalog entries, exactly like "Add from Catalog": walk each category's items and
+        -- track item.ids[1]. Only add when the CatalogKey is new, so a bag entry (with its count) wins.
+        for _, category in ipairs(RCL.CONSUMABLE_CATALOG or {}) do
+            for _, item in ipairs(category.items) do
+                local id = item.ids[1]
+                if FindTrackedIndex(id) == nil then
+                    local key = CatalogKey(id)
+                    if not byKey[key] then
+                        local cand = { id = id, name = item.name, count = nil }
+                        byKey[key] = cand
+                        candidates[#candidates + 1] = cand
+                    end
+                end
+            end
+        end
+
+        -- Plain-substring name match (1, true => no pattern interpretation).
+        local matches = {}
+        for _, cand in ipairs(candidates) do
+            local nameLower = (cand.name or ""):lower()
+            if string.find(nameLower, query, 1, true) then
+                matches[#matches + 1] = cand
+            end
+        end
+        table.sort(matches, function(a, b) return (a.name or "") < (b.name or "") end)
+
+        local shown = 0
+        for i, btn in ipairs(results.buttons) do
+            local cand = matches[i]
+            if cand then
+                local _, _, _, _, iconID = C_Item.GetItemInfoInstant(cand.id)
+                btn.icon:SetTexture(iconID or 134400)
+                btn.name:SetText(cand.name)
+                btn.qty:SetText(cand.count and ("x" .. cand.count) or "")
+                btn.matchId = cand.id
+                btn:Show()
+                shown = i
+            else
+                btn.matchId = nil
+                btn:Hide()
+            end
+        end
+
+        if shown == 0 then
+            results:Hide()
+        else
+            results:SetHeight(shown * 22 + 8)
+            results:Show()
+        end
+    end
+
+    -- Hook (not Set) OnTextChanged so SearchBoxTemplate keeps toggling its own clear button and
+    -- instructions; our handler just refreshes the results on every keystroke and on clear.
+    searchBox:HookScript("OnTextChanged", function() UpdateSearchResults() end)
+
+    -- Column headers (always visible). Each is a mouse-enabled Frame holding a FontString so it
+    -- can show a tooltip explaining its column. Anchored to f so they hold position as rows reflow.
+    local hItem = CreateFrame("Frame", nil, f)
+    hItem:SetSize(60, 14)
+    hItem:SetPoint("TOPLEFT", f, "TOPLEFT", 48, -104)
+    hItem:EnableMouse(true)
+    local hItemText = hItem:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hItemText:SetAllPoints(hItem)
+    hItemText:SetJustifyH("LEFT")
+    hItemText:SetText("Item")
+    hItem:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Item"); GameTooltip:AddLine("The consumable being tracked. Hover a row's icon or name for its full in-game tooltip.", 1, 1, 1, true); GameTooltip:Show() end)
+    hItem:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local hQty = CreateFrame("Frame", nil, f)
+    hQty:SetSize(90, 14)
+    hQty:SetPoint("TOPRIGHT", f, "TOPRIGHT", -124, -104)
+    hQty:EnableMouse(true)
+    local hQtyText = hQty:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hQtyText:SetAllPoints(hQty)
+    hQtyText:SetJustifyH("CENTER")
+    hQtyText:SetText("Qty on hand")
+    hQty:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Qty on Hand"); GameTooltip:AddLine("How many you currently carry, summed across both quality tiers. Green at or above your threshold, yellow below it, red at zero.", 1, 1, 1, true); GameTooltip:Show() end)
+    hQty:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    local hThreshold = CreateFrame("Frame", nil, f)
+    hThreshold:SetSize(72, 14)
+    hThreshold:SetPoint("TOPRIGHT", f, "TOPRIGHT", -30, -104)
+    hThreshold:EnableMouse(true)
+    local hThresholdText = hThreshold:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+    hThresholdText:SetAllPoints(hThreshold)
+    hThresholdText:SetJustifyH("CENTER")
+    hThresholdText:SetText("Threshold")
+    hThreshold:SetScript("OnEnter", function(self) GameTooltip:SetOwner(self, "ANCHOR_RIGHT"); GameTooltip:SetText("Threshold"); GameTooltip:AddLine("The low-water mark. Your count turns yellow below this number and red at zero. Adjust with the - / + buttons or type a value in the box.", 1, 1, 1, true); GameTooltip:Show() end)
+    hThreshold:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+    f:Hide()
+end
+
+-- Render settings.trackedConsumables into a reusable row pool on the frame so repeated refreshes
+-- show/hide rows instead of leaking new frames. Each row: name, color-coded count, threshold
+-- stepper, and a remove control. Safe to call any time the frame exists.
+function UpdateConsumablesDisplay()
+    local f = RCLConsumablesFrame
+    if not f then return end
+    f.rows = f.rows or {}
+
+    local tracked = settings.trackedConsumables
+
+    -- Empty-state hint, created once and toggled with the list.
+    if not f.emptyText then
+        local et = f:CreateFontString(nil, "OVERLAY", "GameFontDisable")
+        et:SetPoint("CENTER", f, "CENTER", 0, 0)
+        et:SetWidth(340)
+        et:SetJustifyH("CENTER")
+        et:SetText("No consumables tracked yet. Use the Add from Bags or Add from Catalog buttons above, or /rcl track <itemID>.")
+        f.emptyText = et
+    end
+
+    if #tracked == 0 then
+        for _, row in ipairs(f.rows) do row:Hide() end
+        f.emptyText:Show()
+        return
+    end
+    f.emptyText:Hide()
+
+    local ROW_HEIGHT = 26
+
+    for i, entry in ipairs(tracked) do
+        local row = f.rows[i]
+        if not row then
+            row = CreateFrame("Frame", nil, f)
+            row:SetHeight(ROW_HEIGHT)
+            if i == 1 then
+                row:SetPoint("TOPLEFT", f, "TOPLEFT", 16, -130)
+            else
+                row:SetPoint("TOPLEFT", f.rows[i - 1], "BOTTOMLEFT", 0, 0)
+            end
+            -- Stretch each row to the frame's right edge so widening the window widens the rows.
+            row:SetPoint("RIGHT", f, "RIGHT", -16, 0)
+
+            -- Hovering anywhere on the row (icon, name, or count) shows the item tooltip.
+            row:EnableMouse(true)
+            row:SetScript("OnEnter", function(self)
+                if self.entry then
+                    GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
+                    GameTooltip:SetItemByID(self.entry.id)
+                    GameTooltip:Show()
+                end
+            end)
+            row:SetScript("OnLeave", function() GameTooltip:Hide() end)
+
+            -- Item icon (far left).
+            row.icon = row:CreateTexture(nil, "ARTWORK")
+            row.icon:SetSize(20, 20)
+            row.icon:ClearAllPoints()
+            row.icon:SetPoint("LEFT", row, "LEFT", 30, 0)
+
+            -- Item name. Stretches between the icon and the count column; its cross-anchor to
+            -- row.count is set below, once that column has been created.
+            row.name = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.name:SetJustifyH("LEFT")
+            row.name:SetWordWrap(false)
+
+            -- Remove control (far right). Reads row.entry so the pooled handler always
+            -- targets whatever item this row currently shows.
+            row.remove = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+            row.remove:SetSize(24, 22)
+            row.remove:ClearAllPoints()
+            row.remove:SetPoint("LEFT", row, "LEFT", 0, 0)
+            row.remove:SetText("X")
+            row.remove:SetScript("OnClick", function()
+                if row.entry then
+                    UntrackConsumable(row.entry.id)
+                    UpdateConsumablesDisplay()
+                end
+            end)
+
+            -- Threshold stepper: [-] value [+], grouped just left of the remove control.
+            row.plus = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+            row.plus:SetSize(24, 22)
+            row.plus:ClearAllPoints()
+            row.plus:SetPoint("RIGHT", row, "RIGHT", 0, 0)
+            row.plus:SetText("+")
+            row.plus:SetScript("OnClick", function()
+                local e = row.entry
+                if e then
+                    e.threshold = (e.threshold or DEFAULT_CONSUMABLE_THRESHOLD) + 1
+                    UpdateConsumablesDisplay()
+                end
+            end)
+
+            -- Typeable threshold field, between the - and + buttons. The steppers still write
+            -- row.entry.threshold and refresh; this box also accepts a value typed directly.
+            row.thresholdBox = CreateFrame("EditBox", nil, row, "InputBoxTemplate")
+            row.thresholdBox:SetSize(40, 20)
+            row.thresholdBox:SetAutoFocus(false)
+            row.thresholdBox:SetNumeric(true)
+            row.thresholdBox:SetJustifyH("CENTER")
+            row.thresholdBox:SetMaxLetters(5)
+            row.thresholdBox:SetPoint("RIGHT", row.plus, "LEFT", -6, 0)
+            local function CommitThreshold(self)
+                local v = tonumber(self:GetText())
+                if not v or v < 1 then v = (row.entry and row.entry.threshold) or DEFAULT_CONSUMABLE_THRESHOLD end
+                if row.entry then row.entry.threshold = v end
+                self:ClearFocus()
+                UpdateConsumablesDisplay()
+            end
+            row.thresholdBox:SetScript("OnEnterPressed", CommitThreshold)
+            row.thresholdBox:SetScript("OnEditFocusLost", CommitThreshold)
+
+            row.minus = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+            row.minus:SetSize(24, 22)
+            row.minus:SetPoint("RIGHT", row.thresholdBox, "LEFT", -6, 0)
+            row.minus:SetText("-")
+            row.minus:SetScript("OnClick", function()
+                local e = row.entry
+                if e then
+                    e.threshold = math.max(1, (e.threshold or DEFAULT_CONSUMABLE_THRESHOLD) - 1)
+                    UpdateConsumablesDisplay()
+                end
+            end)
+
+            -- Current count: a fixed-width column anchored only on its right (to the stepper),
+            -- so the name absorbs the slack and grows when the frame is widened.
+            row.count = row:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+            row.count:SetWidth(90)
+            row.count:SetPoint("RIGHT", row.minus, "LEFT", -8, 0)
+            row.count:SetJustifyH("CENTER")
+
+            -- With the count column built, stretch the name between the icon and the count.
+            row.name:ClearAllPoints()
+            row.name:SetPoint("LEFT", row.icon, "RIGHT", 6, 0)
+            row.name:SetPoint("RIGHT", row.count, "LEFT", -8, 0)
+
+            f.rows[i] = row
+        end
+
+        row.entry = entry
+        local threshold = entry.threshold or DEFAULT_CONSUMABLE_THRESHOLD
+        local count = ConsumableCount(entry.id)
+        local color = ConsumableColor(count, threshold)
+
+        local _, _, _, _, iconID = C_Item.GetItemInfoInstant(entry.id)
+        row.icon:SetTexture(iconID or 134400)
+        row.name:SetText(ConsumableName(entry.id))
+        row.thresholdBox:SetText(threshold)
+        -- ConsumableColor returns a |c color escape; wrap the count to apply it to the FontString.
+        row.count:SetText(color .. count .. "|r")
+        row:Show()
+    end
+
+    -- Park any pooled rows left over from a previously longer list.
+    for i = #tracked + 1, #f.rows do
+        f.rows[i]:Hide()
+    end
+end
+
+-- Confirm + apply copying this character's tracked consumables from another character.
+StaticPopupDialogs["RCL_COPY_CONSUMABLES"] = {
+    text = "Copy consumables from %s?\nThis replaces this character's tracked list.",
+    button1 = YES,
+    button2 = NO,
+    OnAccept = function(self, data)
+        local store = ReadyCheckLoadoutsAccountDB and ReadyCheckLoadoutsAccountDB.consumablesByCharacter
+        if not (store and data and data.sourceKey and store[data.sourceKey]) then return end
+        store[myCharKey] = CopyTable(store[data.sourceKey])
+        settings.trackedConsumables = store[myCharKey]   -- repoint the live list at the fresh copy
+        if RCLConsumablesFrame and RCLConsumablesFrame:IsShown() then
+            UpdateConsumablesDisplay()
+        end
+        if frame and frame:IsShown() and settings.showConsumables and consumablesLabel then
+            local t = BuildConsumablesText()
+            if t then consumablesLabel:SetText(t) end
+        end
+    end,
+    timeout = 0,
+    whileDead = true,
+    hideOnEscape = true,
+    showAlert = true,
+}
+
+-- When an item's info finishes loading, re-resolve any tracked rows / ready-check text still
+-- showing the "item:id" placeholder (common right after copying a list of items this character
+-- has not cached yet).
+local itemInfoFrame = CreateFrame("Frame")
+itemInfoFrame:RegisterEvent("GET_ITEM_INFO_RECEIVED")
+itemInfoFrame:SetScript("OnEvent", function(_, _, itemID)
+    if not itemID then return end
+    local managerShown = RCLConsumablesFrame and RCLConsumablesFrame:IsShown()
+    local displayShown = frame and frame:IsShown() and settings.showConsumables
+    if not (managerShown or displayShown) then return end
+    if not FindTrackedIndex(itemID) then return end
+    if managerShown then UpdateConsumablesDisplay() end
+    if displayShown and consumablesLabel then
+        local t = BuildConsumablesText()
+        if t then consumablesLabel:SetText(t) end
+    end
+end)
+
+-- ============================================================
 -- Slash Commands
 -- ============================================================
 SLASH_RCLLOADOUTS1 = "/rcl"
-SlashCmdList["RCLLOADOUTS"] = function()
-    EnsureOptionsFrame()
-    if optionsFrame:IsShown() then
-        optionsFrame:Hide()
+SlashCmdList["RCLLOADOUTS"] = function(msg)
+    local cmd, rest = (msg or ""):match("^(%S*)%s*(.-)$")
+    cmd = cmd:lower()
+
+    if cmd == "" then
+        -- Preserve original behavior: bare/whitespace-only /rcl toggles the options frame.
+        EnsureOptionsFrame()
+        if optionsFrame:IsShown() then
+            optionsFrame:Hide()
+        else
+            UpdateOptionsDisplay()
+            optionsFrame:Show()
+        end
+
+    elseif cmd == "track" then
+        local idStr, threshStr = rest:match("^(%S*)%s*(.-)$")
+        local id = tonumber(idStr)
+        if not id then
+            print("|cff00ccff[RCL]|r Usage: /rcl track <itemID> [threshold]")
+            return
+        end
+        TrackConsumable(id, tonumber(threshStr))
+        local th = settings.trackedConsumables[FindTrackedIndex(id)].threshold
+        print(string.format("|cff00ccff[RCL]|r Tracking %s (id %d), warn below %d.",
+            ConsumableName(id), id, th))
+
+    elseif cmd == "untrack" then
+        local id = tonumber(rest)
+        if not id then
+            print("|cff00ccff[RCL]|r Usage: /rcl untrack <itemID>")
+            return
+        end
+        if UntrackConsumable(id) then
+            print(string.format("|cff00ccff[RCL]|r Stopped tracking %s.", ConsumableName(id)))
+        else
+            print(string.format("|cff00ccff[RCL]|r %d was not tracked.", id))
+        end
+
+    elseif cmd == "tracklist" then
+        PrintTrackedList()
+
+    elseif cmd == "scan" then
+        local includeOther = (rest:lower() == "other")
+        local results = ScanBags(includeOther)
+        if #results == 0 then
+            print("|cff00ccff[RCL]|r Bag scan found nothing"
+                .. (includeOther and "." or " (consumables only; try '/rcl scan other')."))
+            return
+        end
+        print(string.format("|cff00ccff[RCL]|r Bag scan (%d item%s):",
+            #results, #results == 1 and "" or "s"))
+        for _, e in ipairs(results) do
+            print(string.format("  %s | %s (id %d): %d",
+                e.label, ConsumableName(e.id), e.id, e.count))
+        end
+
+    elseif cmd == "consumables" or cmd == "cons" then
+        EnsureConsumablesFrame()
+        UpdateConsumablesDisplay()
+        RCLConsumablesFrame:Show()
+
     else
-        UpdateOptionsDisplay()
-        optionsFrame:Show()
+        print("|cff00ccff[RCL]|r Usage: /rcl track / untrack / tracklist / scan / consumables")
     end
 end
 
@@ -801,4 +1658,13 @@ SlashCmdList["RCLDEBUG"] = function()
     elseif presetID and currentID and presetID ~= currentID then
         print("Status: Ready to switch on next /readycheck.")
     end
+
+    local catalogCategories, catalogItems = 0, 0
+    for _, category in ipairs(RCL.CONSUMABLE_CATALOG or {}) do
+        catalogCategories = catalogCategories + 1
+        catalogItems = catalogItems + #(category.items or {})
+    end
+    print(string.format("Catalog: %d categories, %d items.", catalogCategories, catalogItems))
+    print(string.format("Tracked: %d consumables.", #settings.trackedConsumables))
+    PrintTrackedList()
 end

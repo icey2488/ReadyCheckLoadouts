@@ -1,10 +1,12 @@
-## Interface: 120005
+## Interface: 120007
 ## Title: ReadyCheck Loadouts
 ## Notes: Displays your gear and loadouts when a ready check fires
 ## Author: Icey2488
 ## SavedVariablesPerCharacter: ReadyCheckLoadoutsDB
+## SavedVariables: ReadyCheckLoadoutsAccountDB
 ## X-Curse-Project-ID: 1513494
 ## Version: @project-version@
 
 
+ConsumableCatalog.lua
 ReadyCheckLoadouts.lua
