@@ -59,16 +59,16 @@
 --   Loa's Gathering                        275265            feast (single tier)
 --   Feast of Knowledge                     275266            feast (single tier)
 --
--- STILL STAGED - commented out, do NOT uncomment until scanned in-client:
---   Potion of Venomous Return  no id at all; probably not worth tracking - see note in utility
---
 -- CAUTION: contiguous ids do NOT imply quality tiers. The three feasts above are consecutive but are
 -- three distinct items. Only scanning tells you which is which.
 --
--- NOT TRACKABLE: R0CKY (spell 1297585) is a permanent helm attachment, not a bag item. See utility.
+-- NOT TRACKED: R0CKY (spell 1297585) permanently attaches to a helmet rather than occupying a bag
+-- slot, so a bag scan can never see it. Potion of Venomous Return is a travel teleport with no combat
+-- relevance. Both are documented in the utility category - do not re-add either.
 --
--- Whatever is still staged is not urgent. The bag-scan is the primary tracking path, so users are
--- already covered for anything they actually carry; this catalog is only the quick-add path.
+-- The 12.1 pass is complete - nothing from this patch remains staged. As always the bag-scan is the
+-- primary tracking path, so users are covered for anything they actually carry; this catalog is only
+-- the quick-add path for items a user does not own yet.
 -- ============================================================================================
 local addonName, RCL = ...
 
@@ -169,10 +169,9 @@ RCL.CONSUMABLE_CATALOG = {
             -- permanently attaches a compression array to a helmet, like a tinker or enchant, so it
             -- never occupies a bag slot and ConsumableCount can never see it. Do not re-add it.
             { ids = { 275676 },         name = "ROCKY-To-Go",         note = "Slowfall 2 min, tradable non-engineer version" }, -- client-verified 275676; single-id, tooltip showed no quality tier
-            -- ---- 12.1 STAGED, DO NOT UNCOMMENT UNVERIFIED ----
-            -- { ids = {  }, name = "Potion of Venomous Return", note = "Coiled Isle travel teleport" },
-            --     [unknown]. No source datamined. Travel-only, zero combat value. This file already
-            --     says niche utility belongs to the bag-scan - consider dropping rather than tracking.
+            -- Potion of Venomous Return is deliberately NOT tracked. It is a hearthstone-style travel
+            -- teleport with no combat relevance, and this file leaves niche utility to the bag-scan
+            -- rather than curating it here. Do not re-add it.
             -- Older variants (caught by bag-scan, linked in groups below):
             --   221955 Convincingly Realistic Jumper Cables (TWW battle rez, works at cap)
             --   219905 Thunderous Drums (TWW lust, works at cap)
