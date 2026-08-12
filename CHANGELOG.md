@@ -1,5 +1,22 @@
 # Changelog
 
+## 1.6
+
+### Added
+
+- Eight new Season 2 consumables in the quick-add catalog, each verified in a live client rather than taken from datamined sources.
+- Combat potions: Liquid Luster, which stacks Versatility five times over thirty seconds with no drawback, and Alluring Nostrum, which procs area Shadow damage at the cost of a stacking movement-speed penalty on the drinker.
+- Healing: Concentrated Silvermoon Health Potion. It is crafted from the Season 1 Silvermoon Health Potion, so expect both to sit in bags during the changeover; the older entry has been kept rather than replaced.
+- Augment rune: Vantus Rune: Tides. It is weekly and boss-specific, so the default low-supply threshold of ten is meaningless for it. Set it to 1 in Manage Consumables.
+- Feasts: Amani Cornucopia, Loa's Gathering, and Feast of Knowledge. All three are functionally identical highest-secondary feasts that differ only in their reagents, and all three are wired into the secondary-feast group so they count together.
+- Utility: ROCKY-To-Go.
+
+### Changed
+
+- Updated for patch 12.1, "Curse of Ula'tek." Interface bumped to 120100.
+- Catalog documentation corrected. The Season 1 rule that an even item id meant Gold quality and an odd id meant Silver turns out to be coincidental, and it flips between items inside a single patch. The reliable pattern for a crafted consumable is a contiguous triplet of lesser quality, high quality, and recipe, which held for all five 12.1 crafted items. Contiguity by itself still proves nothing about quality tiers: the three new feasts occupy consecutive ids and are three separate items.
+- R0CKY, the Engineering counterpart to ROCKY-To-Go, is deliberately not tracked. It permanently attaches a compression array to a helmet instead of occupying a bag slot, so a bag scan can never see it.
+
 ## 1.5
 
 ### Added
