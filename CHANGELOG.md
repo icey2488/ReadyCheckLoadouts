@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.6.1
+
+### Changed
+
+- The addon description now mentions consumable tracking alongside spec, loadouts, and gear durability.
+- Documented the two patch 12.1 items deliberately left out of the consumable catalog. R0CKY permanently attaches to a helmet instead of occupying a bag slot, so a bag scan can never see it. Potion of Venomous Return is a hearthstone-style travel item with no combat relevance, and this addon leaves niche utility to the bag scan rather than curating it.
+- Documentation only. There are no functional changes from 1.6.
+
 ## 1.6
 
 ### Added
