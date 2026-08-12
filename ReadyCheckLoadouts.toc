@@ -1,6 +1,6 @@
 ## Interface: 120100
 ## Title: ReadyCheck Loadouts
-## Notes: Displays your spec, loadouts, and gear durability when a ready check fires
+## Notes: Displays your spec, loadouts, consumables, and gear durability when a ready check fires
 ## Author: Icey2488
 ## SavedVariablesPerCharacter: ReadyCheckLoadoutsDB
 ## SavedVariables: ReadyCheckLoadoutsAccountDB
