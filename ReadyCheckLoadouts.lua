@@ -17,6 +17,7 @@ local DEFAULT_SETTINGS = {
     consumablesLowOnly = false,   -- only list consumables that are low or missing
     autoSwitch       = false,
     dungeonPresets   = {},       -- [DungeonID] = ConfigID
+    retiredDungeonPresets = {},  -- [DungeonID] = ConfigID, from seasons no longer in the pool
     trackedConsumables = {},     -- list of { id = <number>, threshold = <number> }
     frameScale       = 1.0,      -- NEW
     frameOpacity     = 1.0,      -- NEW
@@ -64,18 +65,59 @@ local function InitConsumableStore()
 end
 
 -- ============================================================
--- Data Constants (Midnight Season 1)
+-- Data Constants
 -- ============================================================
-local seasonalDungeons = {
-    { name = "Magisters' Terrace",       id = 2811 },
-    { name = "Maisara Caverns",          id = 2669 },
-    { name = "Nexus-Point Xenas",        id = 2651 },
-    { name = "Windrunner Spire",         id = 2648 },
-    { name = "Algeth'ar Academy",        id = 2526 },
-    { name = "Seat of the Triumvirate",  id = 1753 },
-    { name = "Skyreach",                 id = 1209 },
-    { name = "Pit of Saron",             id = 658  },
-}
+-- The Mythic+ pool is read live from the client rather than hardcoded per season.
+-- C_ChallengeMode.GetMapTable() returns this season's challenge map ids, and
+-- GetMapUIInfo returns the instance mapID as its sixth value (added in patch 11.2.0).
+-- That mapID is the same number GetInstanceInfo reports as its eighth return, which is
+-- the key dungeonPresets is stored under, so no id translation is needed. Verified in
+-- 12.1: Ruby Life Pools 2521 and Murder Row 2813 sit alongside the previously
+-- client-verified Algeth'ar Academy 2526 and Magisters' Terrace 2811.
+--
+-- May return an empty list: GetMapTable is not populated until CHALLENGE_MODE_MAPS_UPDATE
+-- fires after login. Both callers build lazily (menu open, tooltip show), so an early
+-- empty result resolves itself, but callers must still handle it.
+local function GetSeasonalDungeons()
+    local list, seen = {}, {}
+    for _, mapChallengeModeID in ipairs(C_ChallengeMode.GetMapTable() or {}) do
+        local name, _, _, _, _, instanceID = C_ChallengeMode.GetMapUIInfo(mapChallengeModeID)
+        -- Megadungeon wings are two challenge maps sharing one instanceID. Keep the first
+        -- so a single preset key never gets two rows in the dropdown.
+        if name and instanceID and not seen[instanceID] then
+            seen[instanceID] = true
+            list[#list + 1] = { name = name, id = instanceID }
+        end
+    end
+    table.sort(list, function(a, b) return a.name < b.name end)
+    return list
+end
+
+-- Presets assigned in an earlier season are keyed by instance ids no longer in the pool,
+-- so the dropdown can never reach them again. Move them aside once per session rather
+-- than deleting them, so nothing the user configured is destroyed silently.
+local retiredPresetsChecked = false
+local function RetireStalePresets(currentList)
+    if retiredPresetsChecked or #currentList == 0 then return end
+    retiredPresetsChecked = true
+
+    local active = {}
+    for _, dungeon in ipairs(currentList) do active[dungeon.id] = true end
+
+    settings.retiredDungeonPresets = settings.retiredDungeonPresets or {}
+    local moved = 0
+    for instanceID, configID in pairs(settings.dungeonPresets) do
+        if not active[instanceID] then
+            settings.retiredDungeonPresets[instanceID] = configID
+            settings.dungeonPresets[instanceID] = nil
+            moved = moved + 1
+        end
+    end
+    if moved > 0 then
+        print(("|cff00ccff[RCL]|r Retired %d dungeon preset%s from a previous season."):format(
+            moved, moved == 1 and "" or "s"))
+    end
+end
 
 local MPLUS_DIFFICULTY  = DifficultyUtil.ID.MythicKeystone
 local MYTHIC_DIFFICULTY = DifficultyUtil.ID.DungeonMythic
@@ -638,7 +680,14 @@ local function EnsureOptionsFrame()
         local specID = C_SpecializationInfo.GetSpecializationInfo(specIndex)
         local configs = C_ClassTalents.GetConfigIDsBySpecID(specID)
 
-        for _, dungeon in ipairs(seasonalDungeons) do
+        local dungeons = GetSeasonalDungeons()
+        RetireStalePresets(dungeons)
+        if #dungeons == 0 then
+            rootDescription:CreateTitle("Dungeon list unavailable")
+            return
+        end
+
+        for _, dungeon in ipairs(dungeons) do
             local dungeonMenu = rootDescription:CreateButton(dungeon.name)
             if not configs or #configs == 0 then
                 dungeonMenu:CreateTitle("No saved loadouts")
@@ -658,7 +707,7 @@ local function EnsureOptionsFrame()
         GameTooltip:SetOwner(self, "ANCHOR_RIGHT")
         GameTooltip:SetText("Current Dungeon Presets", 1, 0.82, 0)
         local hasPresets = false
-        for _, dungeon in ipairs(seasonalDungeons) do
+        for _, dungeon in ipairs(GetSeasonalDungeons()) do
             local configID = settings.dungeonPresets[dungeon.id]
             if configID then
                 local cInfo = C_Traits.GetConfigInfo(configID)
@@ -741,6 +790,7 @@ local function EnsureOptionsFrame()
     clearBtn:SetText("Clear All Presets")
     clearBtn:SetScript("OnClick", function()
         wipe(settings.dungeonPresets)
+        if settings.retiredDungeonPresets then wipe(settings.retiredDungeonPresets) end
         print("|cff00ccff[RCL]|r All dungeon presets cleared.")
     end)
     AddSimpleTooltip(clearBtn, "Clear All Presets", "Removes all assigned dungeon talent presets from your database.")

@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7
+
+### Changed
+
+- The Mythic+ dungeon list is now read live from the client instead of being hardcoded each season. C_ChallengeMode.GetMapTable and GetMapUIInfo supply the current pool and its instance ids, so the preset dropdown updates itself when a season rolls over and no longer needs a manual edit. Existing presets are unaffected: they are still keyed by instance id.
+- Dungeon presets left over from a previous season are moved into a separate retired list on first use rather than deleted, and the addon reports how many were set aside. Clear All now empties that list too.
+- The dropdown is sorted alphabetically, and megadungeon wings that share a single instance id collapse to one entry.
+
 ## 1.6.1
 
 ### Changed
