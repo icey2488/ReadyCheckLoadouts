@@ -12,6 +12,7 @@ local DEFAULT_SETTINGS = {
     showLootSpec     = true,
     showDurability   = true,     -- NEW: show gear durability on the frame
     sayDurability    = false,    -- NEW: announce durability in chat
+    showPoisons      = true,     -- warn Rogues when a weapon poison is missing
     outputChannel    = "SAY",    -- NEW: chat channel for announcements
     showConsumables    = true,    -- show tracked consumables on the ready-check frame
     consumablesLowOnly = false,   -- only list consumables that are low or missing
@@ -224,9 +225,14 @@ runeLoadoutLabel:SetTextColor(0.8, 0.8, 0.8)
 runeLoadoutLabel:SetPoint("TOPLEFT", durabilityLabel, "BOTTOMLEFT", 0, -15)
 runeLoadoutLabel:Hide()
 
+local poisonLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+poisonLabel:SetTextColor(0.8, 0.8, 0.8)
+poisonLabel:SetPoint("TOPLEFT", runeLoadoutLabel, "BOTTOMLEFT", 0, -15)
+poisonLabel:Hide()
+
 local consumablesLabel = frame:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
 consumablesLabel:SetTextColor(0.8, 0.8, 0.8)
-consumablesLabel:SetPoint("TOPLEFT", runeLoadoutLabel, "BOTTOMLEFT", 0, -15)
+consumablesLabel:SetPoint("TOPLEFT", poisonLabel, "BOTTOMLEFT", 0, -15)
 consumablesLabel:SetJustifyH("LEFT")
 consumablesLabel:Hide()
 
@@ -384,6 +390,51 @@ local function GetLoadoutInfo()
 end
 
 local BuildConsumablesText
+-- ============================================================
+-- Rogue Weapon Poisons
+-- ============================================================
+-- Aura spell ids for every current weapon poison, split by category because a Rogue
+-- runs one lethal and one non-lethal at a time (Dragon-Tempered Blades permits a
+-- second of each; this display names whichever it finds first per category). The
+-- ability and its hour-long self-buff share one spell id. 381664/381637 are confirmed
+-- against the Warcraft Wiki 12.0.1 trackable-aura list; the five older ids predate
+-- Dragonflight and have been stable for years. A wrong id here produces a false
+-- "Missing!" warning, so every id must be scan-verified in-client before release.
+local LETHAL_POISON_IDS    = { 2823, 315584, 8679, 381664 } -- Deadly, Instant, Wound, Amplifying
+local NONLETHAL_POISON_IDS = { 3408, 5761, 381637 }         -- Crippling, Numbing, Atrophic
+
+-- Returns the localized name of the first active poison in the list (nil if none is
+-- active), plus whether the player knows at least one poison in the list at all.
+-- Knowledge gates the warning: a spec or build without a poison category should not
+-- warn about it, and non-Rogues are filtered before this is ever called.
+local function GetActivePoison(spellIDs)
+    local known = false
+    for _, spellID in ipairs(spellIDs) do
+        if IsPlayerSpell(spellID) then
+            known = true
+            local aura = C_UnitAuras.GetPlayerAuraBySpellID(spellID)
+            if aura and aura.name then
+                return aura.name, true
+            end
+        end
+    end
+    return nil, known
+end
+
+-- Returns the formatted poison line for the ready check window, or nil when the
+-- player knows no poisons at all (nothing worth warning about).
+local function BuildPoisonText()
+    local lethalName, lethalKnown       = GetActivePoison(LETHAL_POISON_IDS)
+    local nonlethalName, nonlethalKnown = GetActivePoison(NONLETHAL_POISON_IDS)
+    if not lethalKnown and not nonlethalKnown then return nil end
+
+    local missing = "|cffff0000Missing!|r"
+    if lethalKnown and nonlethalKnown then
+        return "Poisons: " .. (lethalName or missing) .. " / " .. (nonlethalName or missing)
+    end
+    return "Poison: " .. (lethalName or nonlethalName or missing)
+end
+
 local function ShowLoadoutWindow(overrideWarningText, cachedDiffID, cachedInstID)
     local specName, specIconID, gearName, talentName, specID = GetLoadoutInfo()
 
@@ -463,6 +514,19 @@ local function ShowLoadoutWindow(overrideWarningText, cachedDiffID, cachedInstID
         runeLoadoutLabel:Hide()
     end
 
+    if settings.showPoisons and classFilename == "ROGUE" then
+        local poisonText = BuildPoisonText()
+        if poisonText then
+            poisonLabel:SetText(poisonText)
+            poisonLabel:Show()
+            frameHeight = frameHeight + 20
+        else
+            poisonLabel:Hide()
+        end
+    else
+        poisonLabel:Hide()
+    end
+
     if settings.showConsumables then
         local consumablesText = BuildConsumablesText()
         if consumablesText then
@@ -501,6 +565,7 @@ end
 local optionsFrame
 local raidCheckbox, dungeonCheckbox, sayCheckbox, sayRunesCheckbox, lootSpecCheckbox, autoCheckbox
 local durabilityCheckbox, sayDurabilityCheckbox, lockFrameCheckbox, consumablesCheckbox, consumablesLowCheckbox
+local poisonCheckbox
 local scaleSlider, opacitySlider, channelDropdown
 
 local function UpdateChannelDropdownText()
@@ -616,8 +681,12 @@ local function EnsureOptionsFrame()
     durabilityCheckbox:SetScript("OnClick", function(self) settings.showDurability = self:GetChecked() end)
     AddSimpleTooltip(durabilityCheckbox, "Gear Durability", "Displays your average gear durability percentage (and the lowest single item) on the ready check window. Color-coded green/yellow/red.")
 
+    poisonCheckbox = CreateCheck("Warn on missing Poisons (Rogue Only)", durabilityCheckbox, -10)
+    poisonCheckbox:SetScript("OnClick", function(self) settings.showPoisons = self:GetChecked() end)
+    AddSimpleTooltip(poisonCheckbox, "Weapon Poisons", "Shows your active lethal and non-lethal weapon poisons on the ready check window, with a red warning when one is missing. Rogues only; other classes never see the line.")
+
     -- === Column 1: Announcements ===
-    local sayHeader = CreateSectionHeader("Announcements", durabilityCheckbox, -16)
+    local sayHeader = CreateSectionHeader("Announcements", poisonCheckbox, -16)
 
     sayCheckbox = CreateCheck("Output loadout in chat", sayHeader, -6)
     sayCheckbox:SetScript("OnClick", function(self) settings.sayLoadout = self:GetChecked() end)
@@ -820,6 +889,7 @@ local function UpdateOptionsDisplay()
     sayRunesCheckbox:SetChecked(settings.sayRunes)
     lootSpecCheckbox:SetChecked(settings.showLootSpec)
     durabilityCheckbox:SetChecked(settings.showDurability)
+    poisonCheckbox:SetChecked(settings.showPoisons)
     consumablesCheckbox:SetChecked(settings.showConsumables)
     consumablesLowCheckbox:SetChecked(settings.consumablesLowOnly)
     sayDurabilityCheckbox:SetChecked(settings.sayDurability)

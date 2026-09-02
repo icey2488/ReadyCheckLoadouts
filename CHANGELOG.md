@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.8
+
+### Added
+
+- Rogues now see their active weapon poisons on the ready check window, with a red warning when the lethal or non-lethal poison is missing. The line names whichever poison of each type is active, hides itself entirely on other classes, and skips any poison category the character does not know, so builds without a non-lethal poison are never nagged. Enabled by default and controlled by the new "Warn on missing Poisons (Rogue Only)" option in the Display column.
+
 ## 1.7
 
 ### Changed
